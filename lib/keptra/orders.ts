@@ -23,6 +23,8 @@ export interface OrderFacts {
 }
 
 const refusalWindow = (order: OrderFacts) => order.state === OrderState.WINDOW && (order.flags & OrderFlag.REFUSAL) !== 0;
+/** A real proof of delivery exists — the oracle's or the delivery code's (F_PROOF), never the store's declaration. */
+const proven = (order: Pick<OrderFacts, 'flags'>) => (order.flags & OrderFlag.PROOF) !== 0;
 
 /** An order's state in words, in the page's language (the Keptra screens follow the language switch). */
 export const STATUS_WORDS: Record<Lang, Record<string, string>> = {
@@ -32,7 +34,9 @@ export const STATUS_WORDS: Record<Lang, Record<string, string>> = {
     shipped: 'Shipped — on its way',
     refusalWindow: 'The store declared a refusal — window to contest open',
     window: 'Delivered — window to confirm or contest open',
+    provenWindow: 'Delivery proven — window to confirm or contest open',
     contested: 'Contested — the arbiter decides',
+    provenContested: 'Contested after a proven delivery — the arbiter decides',
     notFound: 'Not found',
     completedPrize: 'Completed — delivered',
     completed: 'Completed — the store was paid',
@@ -50,7 +54,9 @@ export const STATUS_WORDS: Record<Lang, Record<string, string>> = {
     shipped: 'Enviada — a caminho',
     refusalWindow: 'A loja declarou uma recusa — janela para contestar aberta',
     window: 'Entregue — janela para confirmar ou contestar aberta',
+    provenWindow: 'Entrega provada — janela para confirmar ou contestar aberta',
     contested: 'Contestada — o árbitro decide',
+    provenContested: 'Contestada depois de uma entrega provada — o árbitro decide',
     notFound: 'Não encontrada',
     completedPrize: 'Concluída — entregue',
     completed: 'Concluída — a loja recebeu',
@@ -68,7 +74,9 @@ export const STATUS_WORDS: Record<Lang, Record<string, string>> = {
     shipped: 'Enviado — en camino',
     refusalWindow: 'La tienda declaró un rechazo — plazo para impugnar abierto',
     window: 'Entregado — plazo para confirmar o impugnar abierto',
+    provenWindow: 'Entrega probada — plazo para confirmar o impugnar abierto',
     contested: 'Impugnado — decide el árbitro',
+    provenContested: 'Impugnado tras una entrega probada — decide el árbitro',
     notFound: 'No encontrado',
     completedPrize: 'Completado — entregado',
     completed: 'Completado — la tienda cobró',
@@ -91,9 +99,9 @@ export function orderStatusText(order: OrderFacts, lang: Lang = 'en'): string {
     case OrderState.SHIPPED:
       return words.shipped;
     case OrderState.WINDOW:
-      return refusalWindow(order) ? words.refusalWindow : words.window;
+      return refusalWindow(order) ? words.refusalWindow : proven(order) ? words.provenWindow : words.window;
     case OrderState.CONTESTED:
-      return words.contested;
+      return proven(order) ? words.provenContested : words.contested;
     case OrderState.CLOSED:
       return closedText(order.outcome, order.prize, words);
     default:
@@ -116,6 +124,18 @@ function closedText(outcome: number | null, prize: boolean, words: Record<string
     default:
       return words.closed;
   }
+}
+
+/**
+ * Where a closed order's money went, for its page — released to the store on a
+ * proven delivery, paid to the store without a proof (the recipient confirmed, a
+ * declared delivery's window ran out, the arbiter decided), or returned to the
+ * buyer by the contract's rule. null while the order is open, and for a split.
+ */
+export function closedPath(order: Pick<OrderFacts, 'state' | 'flags' | 'outcome'>): 'released' | 'paid' | 'returned' | null {
+  if (order.state !== OrderState.CLOSED) return null;
+  if (order.outcome === 0) return proven(order) ? 'released' : 'paid';
+  return order.outcome === 1 || order.outcome === 3 || order.outcome === 4 ? 'returned' : null;
 }
 
 /**

@@ -6,7 +6,7 @@ import { useAccount, useReadContract, useReadContracts } from 'wagmi';
 import { formatUnits } from 'viem';
 import { Check, Loader2, ExternalLink } from 'lucide-react';
 import { CONTRACTS } from '../constants';
-import { GIVEAWAY_MANAGER_V2_ABI, ERC20_META_ABI, GiveawayV2Status, GiveawayV2PrizeKind } from '../lib/giveaway-v2-abi';
+import { GIVEAWAY_MANAGER_V2_ABI, ERC20_META_ABI, ERC721_PRIZE_MODULE_ABI, GiveawayV2Status, GiveawayV2PrizeKind } from '../lib/giveaway-v2-abi';
 import { Button } from '../components/Button';
 import { Banner } from '../components/Banner';
 import { EventShell } from '../components/EventShell';
@@ -256,6 +256,7 @@ function OutcomePanel({
   passkey,
   giveawayId,
   isVoucher,
+  alreadyClaimed,
   proof,
 }: {
   outcome: EntryOutcome | null;
@@ -266,6 +267,8 @@ function OutcomePanel({
   giveawayId: bigint;
   /** P6-8 (B13): the prize is a Keptra voucher — the NFT of the voucher contract, not any NFT. */
   isVoucher: boolean;
+  /** The chain says this prize was already claimed — on an earlier visit, or from another device. */
+  alreadyClaimed: boolean;
   /** The draw's VRF seed, as the mark's proof; null until the campaign is settled. */
   proof: string | null;
 }) {
@@ -273,7 +276,8 @@ function OutcomePanel({
   const k = useEventsCopy().detail.keptra;
   const { relay } = useKeptra();
   const [claiming, setClaiming] = useState(false);
-  const [claimed, setClaimed] = useState(false);
+  const [claimedHere, setClaimed] = useState(false);
+  const claimed = claimedHere || alreadyClaimed;
   const [claimTx, setClaimTx] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
   // A win is celebrated once per device: the draw's mark engraves itself beside the news.
@@ -702,12 +706,26 @@ export const EventDetail: React.FC = () => {
   });
 
   const isNft = g?.prizeKind === GiveawayV2PrizeKind.NFT;
+  // P6-8: getGiveaway names the prize module, not the token. The module's custody
+  // record holds the collection, and a voucher prize is the voucher contract's.
+  const custody = useReadContract({
+    address: g?.prizeModule,
+    abi: ERC721_PRIZE_MODULE_ABI,
+    functionName: 'custodyOf',
+    args: giveawayId !== null ? [giveawayId] : undefined,
+    query: { enabled: isNft && giveawayId !== null && typeof g?.prizeModule === 'string' },
+  });
+  const collection = (custody.data as readonly [string, bigint] | undefined)?.[0] ?? null;
+  const isVoucher = isNft && keptraConfigured() && collection !== null && collection.toLowerCase() === KEPTRA_VOUCHER.toLowerCase();
   // SPEC-BLOCO-03 P6-7: without the token's decimals read, no amount is shown —
   // never one computed with decimals nobody read.
   const readDecimals = meta?.[0]?.status === 'success' ? (meta[0].result as number) : null;
   const decimals = isNft ? 6 : readDecimals;
   const amountShown = decimals === null ? (meta?.[0]?.status === 'failure' ? 'Not read' : '…') : formatUnits(displayAmountOf(g, isNft) ?? 0n, decimals);
-  const symbol = isNft ? 'USDC' : ((meta?.[1]?.result as string | undefined) ?? '?');
+  // A voucher campaign's winner receives the voucher, not its declared value: an
+  // NFT prize is shown once its custody says which it is.
+  const prizeShown = !isNft ? amountShown : isVoucher ? c.detail.voucherPrize : collection !== null ? amountShown : custody.isError ? 'Not read' : '…';
+  const symbol = isVoucher ? c.detail.voucherPrizeNote : isNft ? 'USDC' : ((meta?.[1]?.result as string | undefined) ?? '?');
 
   const { data: winners } = useReadContract({
     address: CONTRACTS.GIVEAWAY_MANAGER_V2,
@@ -742,6 +760,17 @@ export const EventDetail: React.FC = () => {
 
   const settled = g?.status === GiveawayV2Status.SETTLED;
   const outcome = entryStatusResult?.outcome ?? null;
+
+  // A voucher claimed on an earlier visit is still the winner's to redeem: whether
+  // it was claimed is the chain's answer, not this tab's memory.
+  const entryWallet = entryStatusResult?.walletAddress;
+  const { data: claimedOnChain } = useReadContract({
+    address: CONTRACTS.GIVEAWAY_MANAGER_V2,
+    abi: GIVEAWAY_MANAGER_V2_ABI,
+    functionName: 'prizeClaimed',
+    args: giveawayId !== null && entryWallet ? [giveawayId, entryWallet as `0x${string}`] : undefined,
+    query: { enabled: isVoucher && giveawayId !== null && !!entryWallet && outcome === 'WON' && entryStatusResult?.passkey === true },
+  });
 
   /*
    * The gap between the draw landing on chain and the pipeline recording what it
@@ -823,7 +852,7 @@ export const EventDetail: React.FC = () => {
                       </div>
                       <p className="mt-5 text-sm text-gray-400">{c.detail.prizeLabel}</p>
                       <p className="font-mono font-bold text-brand tracking-tighter leading-[0.95] tabular-nums text-[clamp(2.25rem,9vw,3.5rem)] break-all">
-                        {amountShown}
+                        {prizeShown}
                         <span className="block font-display text-xl tracking-wide text-gray-400">{symbol}</span>
                       </p>
                     </>
@@ -834,7 +863,7 @@ export const EventDetail: React.FC = () => {
                           tinha por onde se orientar. */}
                       <p className="mt-3 text-sm text-gray-400">{c.detail.prizeLabel}</p>
                       <h1 className="font-mono font-bold text-brand tracking-tighter leading-[0.95] tabular-nums text-[clamp(2.75rem,11vw,4.5rem)] break-all">
-                        {amountShown}
+                        {prizeShown}
                         <span className="block font-display text-xl tracking-wide text-gray-400">{symbol}</span>
                       </h1>
                     </>
@@ -987,7 +1016,8 @@ export const EventDetail: React.FC = () => {
                 passkey={entryStatusResult?.passkey === true}
                 giveawayId={giveawayId}
                 proof={seedProof}
-                isVoucher={isNft && typeof g?.prizeToken === 'string' && keptraConfigured() && g.prizeToken.toLowerCase() === KEPTRA_VOUCHER.toLowerCase()}
+                isVoucher={isVoucher}
+                alreadyClaimed={claimedOnChain === true}
               />
             )}
 

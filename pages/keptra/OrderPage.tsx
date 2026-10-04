@@ -14,11 +14,13 @@ import { CHAIN_FAILED } from '../../lib/keptra/reads';
 import { KEPTRA_ESCROW, keptraConfigured, OrderState } from '../../lib/keptra/contracts';
 import { codeFor, groupCode } from '../../lib/keptra/deliveryCode';
 import { formatUsdc, formatUtc, timeLeft } from '../../lib/keptra/format';
-import { orderStatusText, recipientActions, type RecipientAction } from '../../lib/keptra/orders';
+import { closedPath, orderStatusText, recipientActions, type RecipientAction } from '../../lib/keptra/orders';
 import { fill, useKeptraCopy } from '../keptra.i18n';
 
 /** The 5 days the page and the offer state for confirming or contesting; only draws how much of the window has run. */
 const WINDOW_SECONDS = 5 * 86_400;
+/** How often an order not yet in the list is asked for again — the chain read's own pace (useOrderOnChain). */
+const LIST_RETRY_MS = 15_000;
 
 /*
  * /orders/:id — one order, for the person who paid or redeemed it (8.1, 8.3, 9.2, P17).
@@ -64,6 +66,16 @@ function OrderBody({ orderId }: { orderId: string }) {
   const { description } = describing;
 
   const code = useMemo(() => (chain.order ? codeFor(window.localStorage, chain.order.codeCommit) : null), [chain.order]);
+
+  // A payment lands here the moment it is confirmed, but the list is the bridge's
+  // index, which the orders pass fills from the chain once a minute: until the
+  // order is in it, ask again.
+  const missing = row === null;
+  useEffect(() => {
+    if (!missing) return;
+    const timer = window.setInterval(listed.reload, LIST_RETRY_MS);
+    return () => window.clearInterval(timer);
+  }, [missing, listed.reload]);
 
   // V3: an order list that failed is an error, not "no order of yours".
   if (listed.read.status === 'failed') return <ReadError what={t.what.yourOrders} error={listed.read.error} onRetry={listed.retry} />;
@@ -118,8 +130,8 @@ function OrderBody({ orderId }: { orderId: string }) {
           </p>
         </div>
 
-        {/* Delivered and closed, the proof done: where the money went. */}
-        {facts.state === OrderState.CLOSED && !row.prize && <PaidPath orderId={orderId} outcome={row.outcome} payout={terms.terms?.payout ?? null} />}
+        {/* Closed: where the money went. */}
+        {facts.state === OrderState.CLOSED && !row.prize && <PaidPath orderId={orderId} path={closedPath(facts)} payout={terms.terms?.payout ?? null} />}
 
         {/* The window is the normal course of an order, not an alarm: it only asks for attention in its last day. */}
         {facts.state === OrderState.WINDOW && row.windowEndsAt && (
@@ -228,22 +240,22 @@ function OrderBody({ orderId }: { orderId: string }) {
 
 /**
  * A closed order's money, drawn as it moved, the first time this device sees it:
- * paid into the Keptra escrow and released to the store on a proven delivery, or
- * returned to the buyer by the contract's rule. Both ends link to the chain.
+ * paid into the Keptra escrow and released to the store — "on proof" only when a
+ * proof of delivery exists — or returned to the buyer by the contract's rule.
+ * Both ends link to the chain.
  */
-function PaidPath({ orderId, outcome, payout }: { orderId: string; outcome: number | null; payout: `0x${string}` | null }) {
+function PaidPath({ orderId, path, payout }: { orderId: string; path: ReturnType<typeof closedPath>; payout: `0x${string}` | null }) {
   const first = useFirstSight(`order-closed-${orderId}`);
   const { t } = useKeptraCopy();
-  const toStore = outcome === 0;
-  const toYou = outcome === 1 || outcome === 3 || outcome === 4;
-  if (!toStore && !toYou) return null;
+  if (path === null) return null;
+  const toStore = path !== 'returned';
   const escrow = { label: t.order.escrow, detail: <AddressLink address={KEPTRA_ESCROW} /> };
   const nodes = toStore ? [{ label: t.order.you }, escrow, { label: t.order.store, detail: payout ? <AddressLink address={payout} /> : undefined }] : [escrow, { label: t.order.you }];
   return (
     <Card>
       <h2 className="flex items-center gap-2.5 font-display text-2xl font-bold tracking-tight">
         <ProofSeal className="h-5 w-5 text-success" />
-        {toStore ? t.order.released : t.order.returned}
+        {path === 'released' ? t.order.released : path === 'paid' ? t.order.paidToStore : t.order.returned}
       </h2>
       <MoneyPath tone="proof" animate={first} nodes={nodes} className="mt-6" />
     </Card>

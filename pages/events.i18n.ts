@@ -42,6 +42,9 @@ export interface EventsCopy {
     notFound: string;
     contractLabel: string;
     prizeLabel: string;
+    /** A voucher campaign's prize, as the winner receives it: the voucher, and what it is for. */
+    voucherPrize: string;
+    voucherPrizeNote: string;
     winnersLabel: string;
     slotsLabel: string;
     timeLeftLabel: string;
@@ -303,6 +306,8 @@ const en: EventsCopy = {
     notFound: 'This campaign does not exist.',
     contractLabel: 'Contract',
     prizeLabel: 'Prize',
+    voucherPrize: 'Voucher',
+    voucherPrizeNote: 'for a physical product',
     winnersLabel: 'Winners',
     slotsLabel: 'Slots',
     timeLeftLabel: 'Entries close',
@@ -561,6 +566,8 @@ const pt: EventsCopy = {
     notFound: 'Esta campanha não existe.',
     contractLabel: 'Contrato',
     prizeLabel: 'Prémio',
+    voucherPrize: 'Voucher',
+    voucherPrizeNote: 'para um produto físico',
     winnersLabel: 'Vencedores',
     slotsLabel: 'Slots',
     timeLeftLabel: 'As entradas fecham',
@@ -819,6 +826,8 @@ const es: EventsCopy = {
     notFound: 'Esta campaña no existe.',
     contractLabel: 'Contrato',
     prizeLabel: 'Premio',
+    voucherPrize: 'Vale',
+    voucherPrizeNote: 'para un producto físico',
     winnersLabel: 'Ganadores',
     slotsLabel: 'Cupos',
     timeLeftLabel: 'Las entradas cierran',

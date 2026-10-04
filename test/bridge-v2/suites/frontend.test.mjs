@@ -1638,7 +1638,9 @@ await test(['P6-7'], 'P6-7: with the token’s decimals not read, no amount is s
 await test(['P6-8'], 'P6-8: the voucher’s text shows only for a voucher prize — the voucher contract’s NFT, not any NFT — and only once claimed (checked in the source)', () => {
   const event = codeOf('pages/EventDetail.tsx');
   assert.match(event, /\{passkey && isVoucher && claimed && \(/);
-  assert.match(event, /isVoucher=\{isNft && typeof g\?\.prizeToken === 'string' && keptraConfigured\(\) && g\.prizeToken\.toLowerCase\(\) === KEPTRA_VOUCHER\.toLowerCase\(\)\}/);
+  // fix/keptra-lote-1 (S1): getGiveaway has no prizeToken; the collection is the prize module's custody record.
+  assert.match(event, /const isVoucher = isNft && keptraConfigured\(\) && collection !== null && collection\.toLowerCase\(\) === KEPTRA_VOUCHER\.toLowerCase\(\);/);
+  assert.match(event, /isVoucher=\{isVoucher\}/);
   assert.ok(!/passkey && isNft &&/.test(event));
 });
 
@@ -2577,4 +2579,88 @@ await test(['LK22'], '/roadmap’s size of the opportunity is one SVG bar chart 
   assert.match(chart, /\{bar\.value\}/);
   // Still in every mode: nothing for reduced motion or the pause to stop.
   assert.doesNotMatch(chart, /useFilmTimeline|requestAnimationFrame|transition|animate/);
+});
+
+// ===========================================================================
+// fix/keptra-lote-1 (04/10/2026) — the owner's symptoms S1 to S5
+// ===========================================================================
+
+await test(['P6-8'], 'S1: a voucher campaign is known from what the chain returns — every field the campaign page reads off getGiveaway is one of the Giveaway struct’s (there is no prizeToken), the voucher is the prize module’s custody collection, and a voucher claimed on an earlier visit still shows how to redeem it (checked in the source)', async () => {
+  const { GIVEAWAY_MANAGER_V2_ABI } = await import('../../../lib/giveaway-v2-abi.ts');
+  const struct = GIVEAWAY_MANAGER_V2_ABI.find((item) => item.type === 'function' && item.name === 'getGiveaway').outputs[0].components.map((field) => field.name);
+  const event = codeOf('pages/EventDetail.tsx');
+  const fields = [...new Set([...event.matchAll(/\bg\??\.(\w+)/g)].map((match) => match[1]))];
+  assert.deepEqual(fields.filter((field) => !struct.includes(field)), [], 'the page reads a field getGiveaway does not return');
+  assert.match(event, /functionName: 'custodyOf'/);
+  assert.match(event, /collection\.toLowerCase\(\) === KEPTRA_VOUCHER\.toLowerCase\(\)/);
+  assert.match(event, /functionName: 'prizeClaimed'/);
+  assert.match(event, /const claimed = claimedHere \|\| alreadyClaimed;/);
+  assert.match(event, /\{passkey && isVoucher && claimed && \(/);
+});
+
+await test(['U24'], 'S2: a proven delivery is said on the order’s page — in the window and in a contest, in the three languages — and a delivery without a proof is not called proven', () => {
+  const base = { mode: 'CARRIER', prize: false, shipBy: String(T0 + 5n * DAY), deliverBy: null, windowEndsAt: String(T0 + DAY), outcome: null };
+  const S = bridgeAbi.OrderState;
+  const F = bridgeAbi.OrderFlag;
+  const said = {
+    en: ['Delivery proven — window to confirm or contest open', 'Contested after a proven delivery — the arbiter decides'],
+    pt: ['Entrega provada — janela para confirmar ou contestar aberta', 'Contestada depois de uma entrega provada — o árbitro decide'],
+    es: ['Entrega probada — plazo para confirmar o impugnar abierto', 'Impugnado tras una entrega probada — decide el árbitro'],
+  };
+  for (const [lang, [inWindow, contested]] of Object.entries(said)) {
+    assert.equal(clientOrders.orderStatusText({ ...base, state: S.WINDOW, flags: F.PROOF }, lang), inWindow);
+    assert.equal(clientOrders.orderStatusText({ ...base, state: S.WINDOW, flags: F.PROOF | F.VERIFIED }, lang), inWindow);
+    assert.equal(clientOrders.orderStatusText({ ...base, state: S.CONTESTED, flags: F.PROOF }, lang), contested);
+  }
+  // Declared by the store, or a refusal: no proof, and the words stay as they were.
+  assert.equal(clientOrders.orderStatusText({ ...base, state: S.WINDOW, flags: 0 }), 'Delivered — window to confirm or contest open');
+  assert.equal(clientOrders.orderStatusText({ ...base, state: S.WINDOW, flags: F.REFUSAL }), 'The store declared a refusal — window to contest open');
+  assert.equal(clientOrders.orderStatusText({ ...base, state: S.CONTESTED, flags: 0 }), 'Contested — the arbiter decides');
+});
+
+await test(['U24'], 'S3: "Released on proof" only for money the escrow released to the store on a proven delivery — never on an open order, never for a store paid without a proof (a confirmation before delivery, the window of a declared delivery, an arbiter) — and the order page shows the heading the order’s facts give (the page’s part checked in the source)', () => {
+  const S = bridgeAbi.OrderState;
+  const F = bridgeAbi.OrderFlag;
+  const path = (state, outcome, flags = 0) => clientOrders.closedPath({ state, outcome, flags });
+  for (const state of [S.PAID, S.SHIPPED, S.WINDOW, S.CONTESTED]) assert.equal(path(state, null, F.PROOF), null, `state ${state}`);
+  assert.equal(path(S.PAID, 0), null, 'a just-paid order');
+  assert.equal(path(S.CLOSED, 0, F.PROOF), 'released');
+  assert.equal(path(S.CLOSED, 0, F.PROOF | F.VERIFIED), 'released');
+  assert.equal(path(S.CLOSED, 0, 0), 'paid');
+  assert.equal(path(S.CLOSED, 0, F.VERIFIED), 'paid');
+  for (const outcome of [1, 3, 4]) assert.equal(path(S.CLOSED, outcome, F.PROOF), 'returned');
+  assert.equal(path(S.CLOSED, 2, F.PROOF), null, 'a split under the refusal terms is neither');
+  const page = codeOf('pages/keptra/OrderPage.tsx');
+  assert.match(page, /<PaidPath orderId=\{orderId\} path=\{closedPath\(facts\)\}/);
+  assert.match(page, /path === 'released' \? t\.order\.released : path === 'paid' \? t\.order\.paidToStore : t\.order\.returned/);
+  assert.ok(!/outcome === 0/.test(page), 'the page still decides the heading from the outcome alone');
+});
+
+await test(['P6-7'], 'S4: a voucher campaign’s page shows the voucher as its prize — what the winner receives — never the declared value in USDC; any other NFT keeps its declared value once its custody is read (checked in the source)', () => {
+  const event = codeOf('pages/EventDetail.tsx');
+  assert.match(event, /const prizeShown = !isNft \? amountShown : isVoucher \? c\.detail\.voucherPrize : collection !== null \? amountShown : custody\.isError \? 'Not read' : '…';/);
+  assert.match(event, /const symbol = isVoucher \? c\.detail\.voucherPrizeNote : isNft \? 'USDC'/);
+  assert.equal((event.match(/\{prizeShown\}/g) ?? []).length, 2, 'both headings of the prize');
+  assert.ok(!/\{amountShown\}/.test(event), 'a prize is still shown without asking whether it is a voucher');
+  const words = read('pages/events.i18n.ts');
+  for (const [prize, note] of [['Voucher', 'for a physical product'], ['Voucher', 'para um produto físico'], ['Vale', 'para un producto físico']]) {
+    assert.ok(words.includes(`voucherPrize: '${prize}',`) && words.includes(`voucherPrizeNote: '${note}',`), `${prize} / ${note}`);
+  }
+});
+
+await test(['U21', 'U24'], 'S5: an order paid a moment ago is on-chain before it is in the buyer’s list — the list has it only after the orders pass — so its page, where the payment lands, asks for the list again until the order is in it (the page’s part checked in the source)', async () => {
+  fresh();
+  const buyer = await person('participant-1', '0x2222222222222222222222222222222222222222');
+  const shop = await person('store-1', '0x3333333333333333333333333333333333333333');
+  offer();
+  chainShows([fx({ id: 1, payer: buyer.participant, store: shop.creator })]);
+  asParticipant('participant-1');
+  assert.deepEqual((await api.myOrders()).orders.map((o) => o.orderId), [], 'the list had the order before the pass');
+  await pass();
+  asParticipant('participant-1');
+  assert.deepEqual((await api.myOrders()).orders.map((o) => o.orderId), ['1']);
+  assert.match(codeOf('pages/keptra/OfferPage.tsx'), /navigate\(`\/orders\/\$\{outcome\.result\.orderId\}`\)/);
+  const page = codeOf('pages/keptra/OrderPage.tsx');
+  assert.match(page, /const missing = row === null;/);
+  assert.match(page, /if \(!missing\) return;\s*const timer = window\.setInterval\(listed\.reload, LIST_RETRY_MS\);\s*return \(\) => window\.clearInterval\(timer\);\s*\}, \[missing, listed\.reload\]\);/);
 });
