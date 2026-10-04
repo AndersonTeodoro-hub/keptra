@@ -2664,3 +2664,86 @@ await test(['U21', 'U24'], 'S5: an order paid a moment ago is on-chain before it
   assert.match(page, /const missing = row === null;/);
   assert.match(page, /if \(!missing\) return;\s*const timer = window\.setInterval\(listed\.reload, LIST_RETRY_MS\);\s*return \(\) => window\.clearInterval\(timer\);\s*\}, \[missing, listed\.reload\]\);/);
 });
+
+// ===========================================================================
+// fix/keptra-lote-1 (04/10/2026) — the owner's symptoms T1 to T4
+// ===========================================================================
+
+await test(['P6-7'], 'T1: wherever a voucher campaign’s prize is shown — its page, the Event Center’s card, the creator’s dashboard — it is the voucher, what the winner receives, never the declared value in USDC; the card and the dashboard know it from the prize module’s custody, as the campaign’s page does (checked in the source)', () => {
+  const tsxUnder = (dir) => readdirSync(`${root}${dir}`).flatMap((name) => (statSync(`${root}${dir}/${name}`).isDirectory() ? tsxUnder(`${dir}/${name}`) : name.endsWith('.tsx') ? [`${dir}/${name}`] : []));
+  // Every screen that can show a campaign's declared value says the voucher instead, in the three languages' words.
+  const screens = [...tsxUnder('pages'), ...tsxUnder('components')].filter((path) => /\bg\??\.declaredValue\b/.test(codeOf(path)));
+  for (const path of ['pages/EventDetail.tsx', 'pages/EventCenter.tsx', 'pages/EventDashboard.tsx']) assert.ok(screens.includes(path), `${path} no longer shows a declared value`);
+  for (const path of screens) {
+    const code = codeOf(path);
+    assert.match(code, /c\.detail\.voucherPrize\b/, `${path} shows a declared value and never the voucher`);
+    assert.match(code, /c\.detail\.voucherPrizeNote\b/, `${path} never says what the voucher is for`);
+  }
+  // The decision: the custody's collection, compared with the voucher contract.
+  const center = codeOf('pages/EventCenter.tsx');
+  assert.match(center, /export function usePrizeType\(/);
+  assert.match(center, /functionName: 'custodyOf',\s*args: \[id\],\s*query: \{ enabled: isNft \},/);
+  assert.match(center, /if \(collection === undefined\) return custody\.isError \? 'failed' : 'reading';/);
+  assert.match(center, /return keptraConfigured\(\) && collection\.toLowerCase\(\) === KEPTRA_VOUCHER\.toLowerCase\(\) \? 'voucher' : 'nft';/);
+  // The card: no figure until the custody says what the prize is, and no USDC beside a voucher.
+  assert.match(center, /const prize = usePrizeType\(id, g\);/);
+  assert.match(center, /\{prize === 'voucher' \? c\.detail\.voucherPrize : prize === 'reading' \? '…' : prize === 'failed' \? 'Not read' : <CountUp value=\{displayAmount\} decimals=\{decimals\} \/>\}/);
+  assert.match(center, /\{\(prize === 'token' \|\| prize === 'nft'\) && <p className="[^"]*">\{symbol\}<\/p>\}/);
+  assert.equal((center.match(/<CountUp /g) ?? []).length, 1, 'a prize figure outside the voucher check');
+  // The dashboard: the same, for the campaigns of this wallet only.
+  const dashboard = codeOf('pages/EventDashboard.tsx');
+  assert.match(dashboard, /const prize = usePrizeType\(id, owned \? g : undefined\);/);
+  assert.match(dashboard, /const prizeShown = prize === 'voucher' \? c\.detail\.voucherPrize : prize === 'reading' \? '…' : prize === 'failed' \? 'Not read' : formatUnits\(displayAmount, decimals\);/);
+  assert.match(dashboard, /const symbol = prize === 'voucher' \? c\.detail\.voucherPrizeNote : prize === 'token' \|\| prize === 'nft' \?/);
+  assert.match(dashboard, /\{prizeShown\} <span className="[^"]*">\{symbol\}<\/span>/);
+  assert.doesNotMatch(dashboard, /\{formatUnits\(displayAmount, decimals\)\}/, 'the declared value is still rendered as it is');
+});
+
+await test(['U21', 'U24'], 'T2: the buyer’s list of orders asks for the list again while it is open — an order paid a moment ago is in the bridge’s list only once the orders pass has it (S5), and it then appears without a reload; a re-read keeps what is shown until the new answer lands (checked in the source)', () => {
+  const page = codeOf('pages/keptra/OrdersPage.tsx');
+  assert.match(page, /const LIST_RETRY_MS = 15_000;/);
+  assert.match(page, /const listed = useBridgeRead\(myOrders, \[\]\);/);
+  assert.match(page, /useEffect\(\(\) => \{\s*const timer = window\.setInterval\(listed\.reload, LIST_RETRY_MS\);\s*return \(\) => window\.clearInterval\(timer\);\s*\}, \[listed\.reload\]\);/);
+  // reload, unlike retry, does not put the list back to "loading" between two answers.
+  const hooks = codeOf('components/keptra/hooks.ts');
+  assert.match(hooks, /const reload = useCallback\(\(\) => setAttempt\(\(n\) => n \+ 1\), \[\]\);/);
+});
+
+await test(['P6-8'], 'T3: a prize already claimed shows as claimed on any visit and any device — a token’s as well as a voucher’s: the chain’s prizeClaimed is read for every passkey winner, and the claim button goes once it says so (checked in the source)', () => {
+  const event = codeOf('pages/EventDetail.tsx');
+  const read = event.match(/functionName: 'prizeClaimed',[\s\S]*?query: \{ enabled: ([^}]*) \},/);
+  assert.ok(read, 'the page no longer reads prizeClaimed');
+  assert.doesNotMatch(read[1], /isVoucher|isNft|prizeKind/, 'the claim is read for one kind of prize only');
+  assert.equal(read[1].trim(), "giveawayId !== null && !!entryWallet && outcome === 'WON' && entryStatusResult?.passkey === true");
+  assert.match(event, /alreadyClaimed=\{claimedOnChain === true\}/);
+  assert.match(event, /const claimed = claimedHere \|\| alreadyClaimed;/);
+  assert.match(event, /\{passkey && !claimed && \(/);
+});
+
+await test(['U23', 'P6-8'], 'T4: a voucher already redeemed is no longer offered for redemption — redeeming hands it to the guarantee, so account/vouchers stops listing it, and the campaign’s page offers it only while that list has this campaign’s voucher (the page’s part checked in the source)', async () => {
+  fresh();
+  const buyer = await person('participant-1', '0x2222222222222222222222222222222222222222');
+  let owner = buyer.participant;
+  escrow.set({
+    voucherLastId: 1n,
+    readVouchers: (ids) => ids.map((voucherId) => ({ voucherId, owner, voided: false, claimedAt: T0 - DAY, giveawayId: 9n, obligationId: 3n })),
+  });
+  asParticipant('participant-1');
+  const claimed = await api.accountVouchers();
+  assert.deepEqual(claimed.vouchers.map((v) => [v.voucherId, v.role, v.giveawayId]), [['1', 'PARTICIPANT', '9']]);
+  // KeptraGuarantee.startRedemption: transferFrom(recipient, guarantee).
+  owner = GUARANTEE;
+  asParticipant('participant-1');
+  const redeemed = await api.accountVouchers();
+  assert.deepEqual(redeemed.vouchers, []);
+  assert.equal(redeemed.complete, true);
+  const event = codeOf('pages/EventDetail.tsx');
+  assert.match(event, /\{passkey && isVoucher && claimed && \(\s*<VoucherToRedeem giveawayId=\{giveawayId\} \/>\s*\)\}/);
+  const panel = event.slice(event.indexOf('function VoucherToRedeem('));
+  assert.match(panel, /const held = useBridgeRead\(accountVouchers, \[\]\);/);
+  assert.match(panel, /const toRedeem = vouchers\.some\(\(voucher\) => voucher\.role === 'PARTICIPANT' && voucher\.giveawayId === giveawayId\.toString\(\)\);/);
+  assert.match(panel, /if \(!toRedeem && complete\) return null;/);
+  assert.match(panel, /<ReadError what=\{t\.what\.yourVouchers\} error=\{held\.read\.error\} onRetry=\{held\.retry\} \/>/);
+  assert.equal((event.match(/\{k\.voucherCta\}/g) ?? []).length, 1, 'the voucher is offered somewhere else on the page');
+  assert.ok(panel.includes('{k.voucherCta}'), 'the offer is not behind the list');
+});

@@ -11,6 +11,9 @@ import { formatUtc } from '../../lib/keptra/format';
 import { nextDeadlineText, orderStatusText } from '../../lib/keptra/orders';
 import { fill, useKeptraCopy } from '../keptra.i18n';
 
+/** How often the list is asked for again — the pace of an order's page (OrderPage LIST_RETRY_MS). */
+const LIST_RETRY_MS = 15_000;
+
 /*
  * /orders — the customer's orders and the vouchers they can redeem (8, 11.4).
  * The list is the bridge's (order/list, account/vouchers); each row opens the
@@ -40,6 +43,13 @@ function OrdersBody() {
   const listed = useBridgeRead(myOrders, []);
   const held = useBridgeRead(accountVouchers, []);
   const now = Math.floor(Date.now() / 1000);
+
+  // The list is the bridge's index, which the orders pass fills from the chain once
+  // a minute: an order paid a moment ago is not in it yet, so it is asked for again.
+  useEffect(() => {
+    const timer = window.setInterval(listed.reload, LIST_RETRY_MS);
+    return () => window.clearInterval(timer);
+  }, [listed.reload]);
 
   if (listed.read.status === 'failed') return <ReadError what={t.what.yourOrders} error={listed.read.error} onRetry={listed.retry} />;
   if (listed.read.status === 'loading') return <Loading label={t.orders.loading} />;

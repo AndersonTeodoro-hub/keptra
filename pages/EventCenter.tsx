@@ -2,7 +2,8 @@ import React, { useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useReadContract, useReadContracts } from 'wagmi';
 import { CONTRACTS } from '../constants';
-import { GIVEAWAY_MANAGER_V2_ABI, ERC20_META_ABI, GiveawayV2Status } from '../lib/giveaway-v2-abi';
+import { GIVEAWAY_MANAGER_V2_ABI, ERC20_META_ABI, ERC721_PRIZE_MODULE_ABI, GiveawayV2Status, GiveawayV2PrizeKind } from '../lib/giveaway-v2-abi';
+import { KEPTRA_VOUCHER, keptraConfigured } from '../lib/keptra/contracts';
 import { EventShell } from '../components/EventShell';
 import { ShareButton } from '../components/ShareButton';
 import { BrandByline, IdentityBanner, useCampaignIdentity } from '../components/CampaignIdentity';
@@ -43,6 +44,28 @@ type GiveawayTuple = {
 
 const STATUS_KEY = ['NONE', 'OPEN', 'CLOSED', 'DRAW_REQUESTED', 'SEED_RECEIVED', 'SETTLED', 'CANCELLED'] as const;
 
+/**
+ * O que o vencedor recebe, como a página da campanha o decide (P6-8): o
+ * getGiveaway nomeia o módulo do prémio, não a colecção; a colecção está no
+ * registo de custódia do módulo, e um prémio voucher é a KeptraVoucher. Numa
+ * campanha de voucher o vencedor recebe o voucher, nunca o valor declarado em
+ * USDC — por isso um prémio NFT só tem valor mostrado depois de lida a custódia.
+ */
+export function usePrizeType(id: bigint, g: { prizeKind: number; prizeModule: `0x${string}` } | undefined) {
+  const isNft = g?.prizeKind === GiveawayV2PrizeKind.NFT;
+  const custody = useReadContract({
+    address: g?.prizeModule,
+    abi: ERC721_PRIZE_MODULE_ABI,
+    functionName: 'custodyOf',
+    args: [id],
+    query: { enabled: isNft },
+  });
+  if (!isNft) return 'token';
+  const collection = (custody.data as readonly [string, bigint] | undefined)?.[0];
+  if (collection === undefined) return custody.isError ? 'failed' : 'reading';
+  return keptraConfigured() && collection.toLowerCase() === KEPTRA_VOUCHER.toLowerCase() ? 'voucher' : 'nft';
+}
+
 function EventCard({ id, index }: { id: bigint; index: number }) {
   const c = useEventsCopy();
 
@@ -75,6 +98,7 @@ function EventCard({ id, index }: { id: bigint; index: number }) {
   // sempre (L9). Leitura à ponte, em lote com os outros cartões; nenhuma leitura
   // da cadeia muda.
   const { data: identity } = useCampaignIdentity(id);
+  const prize = usePrizeType(id, g);
 
   // A ler: o lugar do cartão fica marcado, para a grelha não saltar quando chega.
   if (!g) return <div aria-hidden="true" className="iw-surface h-[232px] animate-pulse opacity-60" />;
@@ -152,10 +176,12 @@ function EventCard({ id, index }: { id: bigint; index: number }) {
                 isCancelled ? 'text-gray-400 line-through decoration-gray-600' : 'text-brand'
               }`}
             >
-              <CountUp value={displayAmount} decimals={decimals} />
+              {prize === 'voucher' ? c.detail.voucherPrize : prize === 'reading' ? '…' : prize === 'failed' ? 'Not read' : <CountUp value={displayAmount} decimals={decimals} />}
             </p>
+            {/* Para que é o voucher, por baixo: ao lado do nome, numa linha, o nome cortava-se. */}
+            {prize === 'voucher' && <p className="mt-1.5 truncate font-mono text-xs text-gray-400">{c.detail.voucherPrizeNote}</p>}
           </div>
-          <p className="shrink-0 pb-0.5 font-mono text-xs text-gray-400">{symbol}</p>
+          {(prize === 'token' || prize === 'nft') && <p className="shrink-0 pb-0.5 font-mono text-xs text-gray-400">{symbol}</p>}
         </div>
 
         {/* Vagas ocupadas: os dois números que já estavam lidos, em todos os estados. */}

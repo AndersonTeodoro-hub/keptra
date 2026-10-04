@@ -11,6 +11,7 @@ import { ConnectPrompt } from '../components/ConnectWallet';
 import { ShareButton } from '../components/ShareButton';
 import { IdentityEditor, useCampaignIdentity } from '../components/CampaignIdentity';
 import { useEventsCopy } from './events.i18n';
+import { usePrizeType } from './EventCenter';
 
 const MAX_SCANNED = 200;
 
@@ -118,13 +119,16 @@ function MyEventRow({ id, creator, refreshAll }: { id: bigint; creator: `0x${str
   const owned = !!g && g.status !== GiveawayV2Status.NONE && g.creator?.toLowerCase() === creator.toLowerCase();
   const { data: identity } = useCampaignIdentity(owned ? id : null);
   const [editingIdentity, setEditingIdentity] = useState(false);
+  // Numa campanha de voucher o prémio é o voucher, não o valor declarado (usePrizeType).
+  const prize = usePrizeType(id, owned ? g : undefined);
 
   if (!g || g.status === GiveawayV2Status.NONE || g.creator?.toLowerCase() !== creator.toLowerCase()) return null;
 
   const isNft = g.prizeKind === GiveawayV2PrizeKind.NFT;
   const decimals = isNft ? 6 : ((meta?.[0]?.result as number | undefined) ?? 18);
-  const symbol = isNft ? 'USDC' : ((meta?.[1]?.result as string | undefined) ?? '?');
+  const symbol = prize === 'voucher' ? c.detail.voucherPrizeNote : prize === 'token' || prize === 'nft' ? (isNft ? 'USDC' : ((meta?.[1]?.result as string | undefined) ?? '?')) : '';
   const displayAmount = isNft ? g.declaredValue : g.prizeAmount;
+  const prizeShown = prize === 'voucher' ? c.detail.voucherPrize : prize === 'reading' ? '…' : prize === 'failed' ? 'Not read' : formatUnits(displayAmount, decimals);
 
   const now = BigInt(Math.floor(Date.now() / 1000));
   const status = g.status as number;
@@ -195,7 +199,7 @@ function MyEventRow({ id, creator, refreshAll }: { id: bigint; creator: `0x${str
             to={`/events/${id.toString()}`}
             className="mt-1 block font-mono text-xl font-bold text-white hover:text-brand transition-colors tabular-nums truncate"
           >
-            {formatUnits(displayAmount, decimals)} <span className="text-sm font-normal text-gray-400">{symbol}</span>
+            {prizeShown} <span className="text-sm font-normal text-gray-400">{symbol}</span>
           </Link>
           <p className="mt-1 font-mono text-xs text-gray-400 tabular-nums">#{id.toString()}</p>
         </div>

@@ -13,7 +13,10 @@ import { EventShell } from '../components/EventShell';
 import { EventStatus } from './EventCenter';
 import { DrawReveal, useFirstSight } from '../components/proof/DrawReveal';
 import { ProofMark } from '../components/proof/ProofMark';
-import { DoneOnChain } from '../components/keptra/ui';
+import { DoneOnChain, ReadError } from '../components/keptra/ui';
+import { useBridgeRead } from '../components/keptra/hooks';
+import { accountVouchers } from '../lib/keptra/api';
+import { useKeptraCopy } from './keptra.i18n';
 import { uintHex } from '../lib/proof/mark';
 import { useLang } from './landing.i18n';
 import { Step } from '../components/Step';
@@ -351,13 +354,40 @@ function OutcomePanel({
       )}
       {/* P6-8: the voucher's text only for a voucher prize, and only once it is claimed. */}
       {passkey && isVoucher && claimed && (
-        <div className="mt-4 rounded-lg border border-dark-border p-4">
-          <p className="text-sm text-gray-300">{k.voucherBody}</p>
-          <Link to="/orders" className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-brand underline underline-offset-4">
-            {k.voucherCta}
-          </Link>
-        </div>
+        <VoucherToRedeem giveawayId={giveawayId} />
       )}
+    </div>
+  );
+}
+
+/**
+ * The voucher, offered for redemption only while the account still holds it:
+ * redeeming hands it to the guarantee (KeptraGuarantee.startRedemption), and the
+ * account's vouchers — the list /orders shows — then no longer name it. A list
+ * cut short (P6-11) may not name one still held, so then it is still offered.
+ */
+function VoucherToRedeem({ giveawayId }: { giveawayId: bigint }) {
+  const k = useEventsCopy().detail.keptra;
+  const { t } = useKeptraCopy();
+  const held = useBridgeRead(accountVouchers, []);
+  // V3: a list that failed is an error with "Try again", not a voucher that is gone.
+  if (held.read.status === 'failed') {
+    return (
+      <div className="mt-4">
+        <ReadError what={t.what.yourVouchers} error={held.read.error} onRetry={held.retry} />
+      </div>
+    );
+  }
+  if (held.read.status === 'loading') return null;
+  const { vouchers, complete } = held.read.value;
+  const toRedeem = vouchers.some((voucher) => voucher.role === 'PARTICIPANT' && voucher.giveawayId === giveawayId.toString());
+  if (!toRedeem && complete) return null;
+  return (
+    <div className="mt-4 rounded-lg border border-dark-border p-4">
+      <p className="text-sm text-gray-300">{k.voucherBody}</p>
+      <Link to="/orders" className="mt-2 inline-flex min-h-[44px] items-center text-sm font-semibold text-brand underline underline-offset-4">
+        {k.voucherCta}
+      </Link>
     </div>
   );
 }
@@ -761,15 +791,16 @@ export const EventDetail: React.FC = () => {
   const settled = g?.status === GiveawayV2Status.SETTLED;
   const outcome = entryStatusResult?.outcome ?? null;
 
-  // A voucher claimed on an earlier visit is still the winner's to redeem: whether
-  // it was claimed is the chain's answer, not this tab's memory.
+  // A prize claimed on an earlier visit, or from another device — a token's or a
+  // voucher's (claimPrize sets prizeClaimed for both) — is shown claimed: whether it
+  // was claimed is the chain's answer, not this tab's memory.
   const entryWallet = entryStatusResult?.walletAddress;
   const { data: claimedOnChain } = useReadContract({
     address: CONTRACTS.GIVEAWAY_MANAGER_V2,
     abi: GIVEAWAY_MANAGER_V2_ABI,
     functionName: 'prizeClaimed',
     args: giveawayId !== null && entryWallet ? [giveawayId, entryWallet as `0x${string}`] : undefined,
-    query: { enabled: isVoucher && giveawayId !== null && !!entryWallet && outcome === 'WON' && entryStatusResult?.passkey === true },
+    query: { enabled: giveawayId !== null && !!entryWallet && outcome === 'WON' && entryStatusResult?.passkey === true },
   });
 
   /*
